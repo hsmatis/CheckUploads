@@ -1,6 +1,6 @@
 #===============================================================================
 #                                                                                    
-# CheckUploads.py Copyright 2013 Neighborhoodguard all Rights Reserved
+# CheckUploads.py Copyright 2013 - 2014 Neighborhoodguard all Rights Reserved
 # Special program to check that at least one file was uploaded on the day before
 # as part of the Neighborhood Guard program         
 # Program only checks for directories that conforms to the data format
@@ -18,6 +18,9 @@
 #         1.7   December 10, 2013 More robust against ftp failures
 #         1.8   December 21, 2013 Change smtp method
 #         1.9   January 13, 2014  Change path for web viewer
+#         1.10  March 24, 2014    Fix path for renaming random image
+#         1.11  June 17, 2014     Now print out last file of the day (to determine if camera still working)
+#         1.12  June 18, 2014     Fixed a tiny bug
 #
 #===============================================================================
 
@@ -33,11 +36,15 @@ import traceback
 import time         #to get sleep function
 from random import randint   #random number generator
 from os import rename   #for os rename
+import shutil
+import glob
 
 from CheckUploads_localsettings import *
 
 def check_ftp_files():
-            
+    version = "1.12"
+    print "Running Software Version", version
+    
     try:
         ftp = ftplib.FTP(machine)
         try:
@@ -57,49 +64,67 @@ def check_ftp_files():
     yesterday = now.strftime('20' + '%y' +'-' + '%m' + '-' + '%d')   #will fail in year 2100
     line_count = []
     images_found =[]
+    last_image = []
             
     for camera in cameras:
-        command = 'cwd ' + '/' + camera_path + '/' + yesterday + '/' + camera + '/hires'
+        print " "
+        print "Reading data from Camera: ", camera
+        command = 'cd ' + '/' + camera_path + '/' + yesterday + '/' + camera + '/hires'
+        command = '/' + camera_path + '/' + yesterday + '/' + camera + '/hires'
         try:
-            ftp.voidcmd(command)    #need to handle errors
+            print "Running command",command
+            ftp.cwd(command)    #need to handle errors
+            print "Command to change directory succeeded"
             
         # empty list that will receive all the log entry
             log = [] 
         # we pass a callback function bypass the print_line that would be called by retrlines
         # we do that only because we cannot use something better than retrlines
             ftp.retrlines('LIST', callback=log.append)
+            print "Listed the Files"
         # we use rsplit because it more efficient in our case if we have a big file
             files = (line.rsplit(None, 1)[1] for line in log)
         # get you file list
             files_list = list(files)
             total_lines = len(files_list)
+            print "Found",total_lines,"images with the last image", files_list[total_lines-1]
+            last_image.append( files_list[total_lines-1] )
+    
         except:
             print 'No images found for the camera located at', camera
+            last_image.append( "no image found")
             total_lines = 0
             
         if total_lines > 0:
             try:
                 random_image = files_list[ randint(0,total_lines - 1) ]
                 print "The random image name is", random_image,"with",total_lines,'files'
+                message = "Error: Unable to retrieve image file "
                 ftp.retrbinary("RETR " + random_image ,open(random_image, 'wb').write)  #This is bad code.  Would rather directly save it to tmp directly
-                print "Successful downloaded the file", random_image
-                newfile = image_directory + camera + '.jpg'
+                print "Successfully downloaded the file", random_image
+
+                newfile = image_directory + camera + ".jpg"
+                oldfile = image_directory + random_image
                 print "Creating new file", newfile
-                rename(random_image, newfile)               #saving files as 'image_directory'imageN.jpg
-                print "Renamed the file to", newfile
+                print "From old file", oldfile
+                message = "Error: Unable to rename image file "
+                os.rename( oldfile, newfile)               #saving files as 'image_directory'imageN.jpg
+                print "Successfully renamed: ", newfile
                 images_found.append(True)  
             except:
-                print "Unable to retrieve image file", random_image, "from camera", camera
-                images_found.append(False)  
+                print message, random_image, "from camera", camera
+                images_found.append(False)
         else:
             images_found.append(False)           
 
         line_count.append(total_lines)               #return the total lines sent from the camera
+
     ftp.quit()
     ftp_connection = True
-    return ftp_connection,line_count,yesterday,images_found
+    return ftp_connection,line_count,yesterday,images_found, last_image
 
-def send_email(good_camera_state, files_found, date, images_found):   #This routine sends an email to people on the call list
+def send_email(good_camera_state, files_found, date, images_found, last_image):   #This routine sends an email to people on the call list
+    print " "
     if good_camera_state == False:
         print "There was at least one camera MISSING images on", date
         print "Please take action!!"
@@ -131,8 +156,12 @@ def send_email(good_camera_state, files_found, date, images_found):   #This rout
     body =''
     for index, value in enumerate(cameras):
         captured_images = files_found[index]
-        body = body + 'The number of images recorded for the camera located at '  + value  + ' is ' + str (captured_images) + '\n'
-  
+        body = body + 'The number of images recorded for camera '  + value  + ' is ' + str (captured_images) + '\n'
+    body = body + '\n'
+    for index, value in enumerate(cameras):
+        body = body + 'The last daily image for camera '  + value  + ' is ' + last_image[index] + '\n'
+
+
     body = body + '\n'
     part = MIMEText(body)       # This is the textual part:
     msg.attach(part) 
@@ -191,7 +220,7 @@ def check_cameras(files):   #Checks whether a camera is working.  If there is at
     return all_working_cameras
     
 for n in range(180):     #try n ftp connections before giving up
-    (ftp_connection,files_found,date, images_found) = check_ftp_files()
+    (ftp_connection,files_found,date, images_found, last_image) = check_ftp_files()
     if ftp_connection:
         break
     else:
@@ -201,7 +230,7 @@ for n in range(180):     #try n ftp connections before giving up
 
 if ftp_connection:
     good_camera_state = check_cameras(files_found)
-    send_email(good_camera_state, files_found, date,images_found)  
+    send_email(good_camera_state, files_found, date, images_found, last_image)
     print "\nExecution of program CheckUploads has completed."
 else:
     print "\nFailed after repeated attempts to connect."
